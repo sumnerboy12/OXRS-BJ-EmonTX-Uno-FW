@@ -2,18 +2,18 @@
 #define CONFIG_H
 
 /* ----------------- General config -------------------------------- */
-/* Debugging */
-#define       ENABLE_DEBUG            true
-
 /* Serial */
 #define       SERIAL_BAUD_RATE        115200
 
 /* Ethernet */
 #define       ENABLE_DHCP             true
-#define       ENABLE_MAC_ADDRESS_ROM  true
-#define       MAC_I2C_ADDRESS         0x50                  // Microchip 24AA125E48 I2C ROM address
 
-const byte    STATIC_MAC[]          = { 0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED };
+// can't use MAC address ROM on EtherTen since the EmonTX shield
+// uses ADC0-4 for V and I sensors and the I2C bus uses ADC4-5
+const byte    STATIC_MAC[]          = { 0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0x3C };
+//const byte    STATIC_MAC[]          = { 0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0x3D };
+//const byte    STATIC_MAC[]          = { 0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0x3E };
+
 const byte    STATIC_IP[]           = { 192, 168, 40, 21 };
 const byte    STATIC_DNS[]          = { 192, 168, 40, 100 };
 

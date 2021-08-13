@@ -17,7 +17,6 @@
 /*--------------------------- Libraries ----------------------------------*/
 #include <avr/wdt.h>
 #include <SPI.h>
-#include <Wire.h>
 #include <Ethernet.h>
 #include <PubSubClient.h>
 
@@ -62,13 +61,15 @@ enum DIVERTER_MODES     { ANTI_FLICKER, NORMAL, DISABLED };
 //    - DISABLED        diverter disabled
 enum DIVERTER_MODES diverterMode = DISABLED;
 
-// flag for enabling/disabling the diverter
-boolean diverterEnabled = false;
+// the current state of the diverter
 int divertCurrent = -1;
 
 // LED pulse to indicate something happening
 unsigned long LED_onAt;
 int LED_onMs = 50;
+
+// debug mode
+bool debugEnabled = false;
 
 /*--------------------------- Pinout assignments -------------------------*/
 // digital input pins:
@@ -226,17 +227,11 @@ void setup() {
   // setup indicator LED
   pinMode(LED_pin, OUTPUT);
 
-  // start the I2C bus
-  Wire.begin();
-
   // start the SPI bus
   SPI.begin();
 
   // initialise ethernet/MQTT
   initialiseNetwork();
-
-  // ensure the diverter is OFF
-  setDivert(DIVERT_OFF);
 
   // setup our calibration variables
   initialiseCalibration();
@@ -315,10 +310,7 @@ ISR(ADC_vect) {
 void loop() {
   // reset the watchdog timer
   wdt_reset();
-
-  // if in debug mode then manually check our MQTT queue
-  if (ENABLE_DEBUG) { mqttMaintain(); }
-
+  
   // flag is set after every pair of ADC conversions
   if (dataReady) {
     // reset the flag
@@ -335,21 +327,9 @@ void loop() {
 void initialiseNetwork() {
   // Determine MAC address
   byte mac[6];
-  if (ENABLE_MAC_ADDRESS_ROM)
-  {
-    Serial.print(F("Getting MAC address from ROM: "));
-    mac[0] = readRegister(MAC_I2C_ADDRESS, 0xFA);
-    mac[1] = readRegister(MAC_I2C_ADDRESS, 0xFB);
-    mac[2] = readRegister(MAC_I2C_ADDRESS, 0xFC);
-    mac[3] = readRegister(MAC_I2C_ADDRESS, 0xFD);
-    mac[4] = readRegister(MAC_I2C_ADDRESS, 0xFE);
-    mac[5] = readRegister(MAC_I2C_ADDRESS, 0xFF);
-  }
-  else
-  {
-    Serial.print(F("Using static MAC address: "));
-    memcpy(mac, STATIC_MAC, sizeof(mac));
-  }
+  Serial.print(F("Using static MAC address: "));
+  memcpy(mac, STATIC_MAC, sizeof(mac));
+
   char mac_address[18];
   sprintf_P(mac_address, PSTR("%02X:%02X:%02X:%02X:%02X:%02X"), mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
   Serial.println(mac_address);
@@ -438,8 +418,7 @@ void initialiseADC() {
   sei();                 // Enable Global Interrupts  
 }
 
-void mqttMaintain()
-{
+void mqttMaintain() {
   if (mqtt_client.loop())
   {
     // Currently connected so ensure we are ready to reconnect if it drops
@@ -519,12 +498,9 @@ void mqttCallback(char* topic, byte* payload, int length) {
   // Junk the device id (we only subscribe to our own device so no need to check)
   topicIndex = strtok(NULL, "/");
 
-  if (ENABLE_DEBUG)
-  {
-    Serial.print(F("["));
-    Serial.print(topicType);
-    Serial.print(F("]"));
-  }  
+  Serial.print(F("["));
+  Serial.print(topicType);
+  Serial.print(F("]"));
 
   if (strncmp(topicType, "CONF", 4) == 0)
   {
@@ -534,15 +510,30 @@ void mqttCallback(char* topic, byte* payload, int length) {
   }
   else
   {
-    if (ENABLE_DEBUG) { Serial.println(F(" INVALID TOPIC")); }  
+    Serial.println(F(" INVALID TOPIC"));
   }
 }
 
 void handleConfig(char * configType, byte * payload, int length) {
   // listen for control messages
-  if (strncmp(configType, "scalefactor", 11) == 0) 
+  if (strncmp(configType, "debug", 5) == 0) 
   {
-    if (ENABLE_DEBUG) { Serial.print(F(" SCALEFACTOR:")); }
+    Serial.print(F(" DEBUG:"));
+
+    if (length == 0 || strncmp((char*)payload, "OFF", length) == 0 || strncmp((char*)payload, "0", length) == 0)
+    {
+      debugEnabled = false;
+      Serial.println(F("DISABLED"));
+    }
+    else
+    {
+      debugEnabled = true;
+      Serial.println(F("ENABLED"));
+    }
+  } 
+  else if (strncmp(configType, "scalefactor", 11) == 0) 
+  {
+    Serial.print(F(" SCALEFACTOR:"));
 
     char scaleFactor[10];
     strncpy(scaleFactor, (char*)payload, length);
@@ -552,62 +543,43 @@ void handleConfig(char * configType, byte * payload, int length) {
     scaleFactor_CT3 = scaleFactor_CT1;
     scaleFactor_CT4 = scaleFactor_CT1;
 
-    if (ENABLE_DEBUG) { Serial.println(scaleFactor_CT1, 6); }
-    
-    // reconfigure the various scale/power factors
-    updateCalculationParameters();
-  } 
-  else if (strncmp(configType, "divertermode", 10) == 0) 
-  {
-    if (ENABLE_DEBUG) { Serial.print(F(" DIVERTERMODE:")); }
-
-    // update the output mode
-    if (length == 0 || strncmp((char*)payload, "DISABLED", length) == 0) 
-    {
-      diverterMode = DISABLED;
-      if (ENABLE_DEBUG) { Serial.println(F("DISABLED")); }
-    } 
-    else if (strncmp((char*)payload, "ANTIFLICKER", length) == 0) 
-    {
-      diverterMode = ANTI_FLICKER;
-      if (ENABLE_DEBUG) { Serial.println(F("ANTI-FLICKER")); }
-    } 
-    else if (strncmp((char*)payload, "NORMAL", length) == 0) 
-    {
-      diverterMode = NORMAL;
-      if (ENABLE_DEBUG) { Serial.println(F("NORMAL")); }
-    } 
-    else 
-    {
-      if (ENABLE_DEBUG) { Serial.println(F("ERROR")); }
-    }
+    Serial.println(scaleFactor_CT1, 6);
     
     // reconfigure the various scale/power factors
     updateCalculationParameters();
   } 
   else if (strncmp(configType, "diverter", 8) == 0) 
   {
-    if (ENABLE_DEBUG) { Serial.print(F(" DIVERTER:")); }
+    Serial.print(F(" DIVERTERMODE:"));
 
-    if (length == 0 || strncmp((char*)payload, "OFF", length) == 0 || strncmp((char*)payload, "0", length) == 0)
+    // update the output mode
+    if (length == 0 || strncmp((char*)payload, "DISABLED", length) == 0) 
     {
-      diverterEnabled = false;
-      if (ENABLE_DEBUG) { Serial.println(F("OFF")); }
-    }
-    else if (strncmp((char*)payload, "ON", length) == 0 || strncmp((char*)payload, "1", length) == 0)
+      diverterMode = DISABLED;
+      Serial.println(F("DISABLED"));
+    } 
+    else if (strncmp((char*)payload, "ANTIFLICKER", length) == 0) 
     {
-      diverterEnabled = true;
-      if (ENABLE_DEBUG) { Serial.println(F("ON")); }
-    }
-    else
+      diverterMode = ANTI_FLICKER;
+      Serial.println(F("ANTI-FLICKER"));
+    } 
+    else if (strncmp((char*)payload, "NORMAL", length) == 0) 
     {
-      if (ENABLE_DEBUG) { Serial.println(F("ERROR")); }
+      diverterMode = NORMAL;
+      Serial.println(F("NORMAL"));
+    } 
+    else 
+    {
+      Serial.println(F("ERROR"));
     }
+    
+    // reconfigure the various scale/power factors
+    updateCalculationParameters();
   } 
   else 
   {
-    if (ENABLE_DEBUG) { Serial.print(F(" INVALID:")); }
-    if (ENABLE_DEBUG) { Serial.println(configType); }
+    Serial.print(F(" INVALID:"));
+    Serial.println(configType);
   }
 }
 
@@ -735,7 +707,7 @@ void calculateEnergy() {
         // much easier than checking the voltage level
         if (samplesDuringThisCycle == 3) {
           // check if the diverter is enabled
-          if (diverterEnabled) {
+          if (diverterMode != DISABLED) {
             // only update the diverter if we are outside the hysteresis range
             if (energyInBucket < lowerEnergyThreshold) {
               setDivert(DIVERT_OFF);
@@ -762,7 +734,7 @@ void calculateEnergy() {
         sumP_CT3 = 0;
         sumP_CT4 = 0;
         samplesDuringThisCycle = 0;
-        Serial.println(F("Go!"));
+        Serial.println(F("READY!"));
       }
     }
   } // end of processing that is specific to samples where the voltage is positive
@@ -808,37 +780,37 @@ void calculateEnergy() {
   long  phaseShiftedSampleVminusDC_CT4 = lastSampleVminusDC + (((sampleVminusDC - lastSampleVminusDC)*phaseCal_CT4)>>8);
 
   // calculate the "real power" in this sample pair and add to the accumulated sum
-  long filtV_div4_CT1 = phaseShiftedSampleVminusDC_CT1>>2;   // reduce to 16-bits (now x64, or 2^6)
-  long filtI_div4_CT1 = sampleIminusDC_CT1>>2;               // reduce to 16-bits (now x64, or 2^6)
-  long instP_CT1 = filtV_div4_CT1 * filtI_div4_CT1;          // 32-bits (now x4096, or 2^12)
-  instP_CT1 = instP_CT1>>12;                                 // scaling is now x1, as for Mk2 (V_ADC x I_ADC)
-  sumP_CT1 +=instP_CT1;                                      // cumulative power, scaling as for Mk2 (V_ADC x I_ADC)
+  long filtV_div4_CT1 = phaseShiftedSampleVminusDC_CT1>>2;    // reduce to 16-bits (now x64, or 2^6)
+  long filtI_div4_CT1 = sampleIminusDC_CT1>>2;                // reduce to 16-bits (now x64, or 2^6)
+  long instP_CT1 = filtV_div4_CT1 * filtI_div4_CT1;           // 32-bits (now x4096, or 2^12)
+  instP_CT1 = instP_CT1>>12;                                  // scaling is now x1, as for Mk2 (V_ADC x I_ADC)
+  sumP_CT1 +=instP_CT1;                                       // cumulative power, scaling as for Mk2 (V_ADC x I_ADC)
 
-  long filtV_div4_CT2 = phaseShiftedSampleVminusDC_CT2>>2;   // reduce to 16-bits (now x64, or 2^6)
-  long filtI_div4_CT2 = sampleIminusDC_CT2>>2;               // reduce to 16-bits (now x64, or 2^6)
-  long instP_CT2 = filtV_div4_CT2 * filtI_div4_CT2;          // 32-bits (now x4096, or 2^12)
-  instP_CT2 = instP_CT2>>12;                                 // scaling is now x1, as for Mk2 (V_ADC x I_ADC)
-  sumP_CT2 +=instP_CT2;                                      // cumulative power, scaling as for Mk2 (V_ADC x I_ADC)
+  long filtV_div4_CT2 = phaseShiftedSampleVminusDC_CT2>>2;    // reduce to 16-bits (now x64, or 2^6)
+  long filtI_div4_CT2 = sampleIminusDC_CT2>>2;                // reduce to 16-bits (now x64, or 2^6)
+  long instP_CT2 = filtV_div4_CT2 * filtI_div4_CT2;           // 32-bits (now x4096, or 2^12)
+  instP_CT2 = instP_CT2>>12;                                  // scaling is now x1, as for Mk2 (V_ADC x I_ADC)
+  sumP_CT2 +=instP_CT2;                                       // cumulative power, scaling as for Mk2 (V_ADC x I_ADC)
 
-  long filtV_div4_CT3 = phaseShiftedSampleVminusDC_CT3>>2;   // reduce to 16-bits (now x64, or 2^6)
-  long filtI_div4_CT3 = sampleIminusDC_CT3>>2;               // reduce to 16-bits (now x64, or 2^6)
-  long instP_CT3 = filtV_div4_CT3 * filtI_div4_CT3;          // 32-bits (now x4096, or 2^12)
-  instP_CT3 = instP_CT3>>12;                                 // scaling is now x1, as for Mk2 (V_ADC x I_ADC)
-  sumP_CT3 +=instP_CT3;                                      // cumulative power, scaling as for Mk2 (V_ADC x I_ADC)
+  long filtV_div4_CT3 = phaseShiftedSampleVminusDC_CT3>>2;    // reduce to 16-bits (now x64, or 2^6)
+  long filtI_div4_CT3 = sampleIminusDC_CT3>>2;                // reduce to 16-bits (now x64, or 2^6)
+  long instP_CT3 = filtV_div4_CT3 * filtI_div4_CT3;           // 32-bits (now x4096, or 2^12)
+  instP_CT3 = instP_CT3>>12;                                  // scaling is now x1, as for Mk2 (V_ADC x I_ADC)
+  sumP_CT3 +=instP_CT3;                                       // cumulative power, scaling as for Mk2 (V_ADC x I_ADC)
 
-  long filtV_div4_CT4 = phaseShiftedSampleVminusDC_CT4>>2;   // reduce to 16-bits (now x64, or 2^6)
-  long filtI_div4_CT4 = sampleIminusDC_CT4>>2;               // reduce to 16-bits (now x64, or 2^6)
-  long instP_CT4 = filtV_div4_CT4 * filtI_div4_CT4;          // 32-bits (now x4096, or 2^12)
-  instP_CT4 = instP_CT4>>12;                                 // scaling is now x1, as for Mk2 (V_ADC x I_ADC)
-  sumP_CT4 +=instP_CT4;                                      // cumulative power, scaling as for Mk2 (V_ADC x I_ADC)
+  long filtV_div4_CT4 = phaseShiftedSampleVminusDC_CT4>>2;    // reduce to 16-bits (now x64, or 2^6)
+  long filtI_div4_CT4 = sampleIminusDC_CT4>>2;                // reduce to 16-bits (now x64, or 2^6)
+  long instP_CT4 = filtV_div4_CT4 * filtI_div4_CT4;           // 32-bits (now x4096, or 2^12)
+  instP_CT4 = instP_CT4>>12;                                  // scaling is now x1, as for Mk2 (V_ADC x I_ADC)
+  sumP_CT4 +=instP_CT4;                                       // cumulative power, scaling as for Mk2 (V_ADC x I_ADC)
 
   samplesDuringThisCycle++;
 
   // store items for use during next loop
-  cumVdeltasThisCycle += sampleVminusDC;                // for use with LP filter
-  lastSampleVminusDC = sampleVminusDC;                  // required for phaseCal algorithm
+  cumVdeltasThisCycle += sampleVminusDC;                      // for use with LP filter
+  lastSampleVminusDC = sampleVminusDC;                        // required for phaseCal algorithm
 
-  polarityOfLastSampleV = polarityNow;                            // for identification of half cycle boundaries
+  polarityOfLastSampleV = polarityNow;                        // for identification of half cycle boundaries
 }
 // end of calculateEnergy()
 
@@ -858,7 +830,7 @@ void updateCalculationParameters() {
   // for the flow of energy at the 'grid' connection point (CT1)
   capacityOfEnergyBucket = (long)SWEETZONE_IN_JOULES * CYCLES_PER_SECOND * (1/powerCal_CT1);
 
-  if (ENABLE_DEBUG) {
+  if (debugEnabled) {
     Serial.println(F("** Calibration parameters **"));
     Serial.print(F("    scaleFactor_CT1             = ")); Serial.println(scaleFactor_CT1, 6);
     Serial.print(F("    scaleFactor_CT2             = ")); Serial.println(scaleFactor_CT2, 6);
@@ -869,10 +841,10 @@ void updateCalculationParameters() {
   }
     
   // calculate the energy bucket thresholds for use by the diverter
-  if (ENABLE_DEBUG) { Serial.print(F("    diverter mode               = ")); }
+  if (debugEnabled) { Serial.print(F("    diverter mode               = ")); }
   if (diverterMode == ANTI_FLICKER)
   {
-    if (ENABLE_DEBUG) { Serial.println(F("ANTI-FLICKER")); }
+    if (debugEnabled) { Serial.println(F("ANTI-FLICKER")); }
     
     // settings for anti-flicker mode
     lowerEnergyThreshold = capacityOfEnergyBucket * (0.5 - offsetOfEnergyThresholdsInAFmode);
@@ -880,7 +852,7 @@ void updateCalculationParameters() {
   }
   else if (diverterMode == NORMAL)
   {
-    if (ENABLE_DEBUG) { Serial.println(F("NORMAL")); }
+    if (debugEnabled) { Serial.println(F("NORMAL")); }
 
     // settings for normal mode
     lowerEnergyThreshold = capacityOfEnergyBucket * 0.5;
@@ -888,14 +860,14 @@ void updateCalculationParameters() {
   }
   else
   {
-    if (ENABLE_DEBUG) { Serial.println(F("DISABLED")); }
+    if (debugEnabled) { Serial.println(F("DISABLED")); }
 
     // settings for disabled
     lowerEnergyThreshold = 0;
     upperEnergyThreshold = 0;
   }
   
-  if (ENABLE_DEBUG) {
+  if (debugEnabled) {
     Serial.print(F("    lowerEnergyThreshold        = "));
     Serial.println(lowerEnergyThreshold);
     Serial.print(F("    upperEnergyThreshold        = "));
@@ -923,7 +895,7 @@ void publishReadings() {
   }
 
   // dump readings to serial for debugging
-  if (ENABLE_DEBUG) {
+  if (debugEnabled) {
     Serial.print(F("CT1 = "));
     Serial.print(tx_data.power_CT1);
     Serial.print(F(", CT2 = "));
@@ -1007,14 +979,4 @@ void publishDivert(char * topic, int divert) {
 
   // publish to the MQTT broker
   mqtt_client.publish(topic, payload);
-}
-
-// Read 1 byte from I2C device register
-uint8_t readRegister(int adr, uint8_t reg) {
-  Wire.beginTransmission(adr);
-  Wire.write(reg);
-  Wire.endTransmission();
-  Wire.requestFrom(adr, 1);
-  while (!Wire.available()) {}
-  return Wire.read();
 }
