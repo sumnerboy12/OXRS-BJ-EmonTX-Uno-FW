@@ -1,54 +1,43 @@
-//      Code by Robin Emley (calypso_rae on Open Energy Monitor Forum) - September 2013
-//      Updated November 2013 to include analog and LED pins for the emonTx V3 by Glyn Hudson
+// Code originally by Robin Emley (calypso_rae on Open Energy Monitor Forum) - September 2013
+// Updated November 2013 to include analog and LED pins for the emonTx V3 by Glyn Hudson
 //
-//      Updated July 2014 to send readings via MQTT by Ben Jones
-//      Updated October 2014 to include PV router functionality by Ben Jones
-//      Updated January 2015 to add support for remote config of scale factor (by MQTT)
+// Updated July 2014 to send readings via MQTT by Ben Jones
+// Updated October 2014 to include PV router functionality by Ben Jones
+// Updated January 2015 to add support for remote config of scale factor (by MQTT)
+// Updated November 2021 to add OXRS_MQTT and streamline code
 //
-//      The interrupt-based kernel for this sketch was kindly provided by Jorg Becker.
+// The interrupt-based kernel for this sketch was kindly provided by Jorg Becker.
 
 /*--------------------------- Firmware -----------------------------------*/
 #define FW_NAME       "EmonTXArduinoFirmware"
+#define FW_MAKER      "Ben Jones"
 #define FW_VERSION    "1.0.0"
 
 /*--------------------------- Configuration ------------------------------*/
 // Should be no user configuration in this file, everything should be in;
 #include "config.h"
+#include "calibration.h"
 
-/*--------------------------- Libraries ----------------------------------*/
+/*-------------------------- Libraries --------------------------*/
 #include <Ethernet.h>
 #include <ArduinoJson.h>
 #include <PubSubClient.h>
 #include <OXRS_Debug.h>
 #include <OXRS_MQTT.h>
 
-/*------------------------------ Constants -------------------------------*/
-// NB. Any tool which determines the optimal value of phaseCal must have a similar
-// scheme for taking sample values as does this sketch!
-// http://openenergymonitor.org/emon/node/3792#comment-18683
-const float PHASE_CAL_OFFSET[CT_COUNT]  = { 0.2, 0.4, 0.6, 0.8 };
+/*-------------------------- Constants --------------------------*/
+#define     SERIAL_BAUD_RATE          115200
+#define     DHCP_TIMEOUT_MS           15000
+#define     DHCP_RESPONSE_TIMEOUT_MS  4000
 
 // hardware pins (sensors are analogue inputs)
-const byte CURRENT_SENSOR[CT_COUNT] = { 1, 2, 3, 4 };
-const byte VOLTAGE_SENSOR           = 0;
-const byte LED_PIN                  = 9;
+const byte  CURRENT_SENSOR[CT_COUNT]  = { 1, 2, 3, 4 };
+const byte  VOLTAGE_SENSOR            = 0;
+const byte  LED_PIN                   = 9;
 
-/*--------------------------- Global Variables ---------------------------*/
+/*-------------------------- Global Variables -------------------*/
 // Disable debugging due to memory constraints (required by OXRS_Debug library)
 boolean g_debug_enabled       = false;
-
-// Internal data structure
-typedef struct 
-{
-  int sampleI;
-  long sumP;
-  long sumE;
-  float normalisationFactor;
-} EMONTX_DATA;
-EMONTX_DATA g_data[CT_COUNT];
-
-// Definition of enumerated types
-enum POLARITY                 { NEGATIVE, POSITIVE };
 
 // Calibration factor
 float scaleFactor             = DEFAULT_SCALE_FACTOR;
@@ -57,47 +46,60 @@ float scaleFactor             = DEFAULT_SCALE_FACTOR;
 boolean diverterEnabled       = DEFAULT_DIVERTER_ENABLED;
 boolean diverterState         = false;
 
-/*--------------------------- Energy calculation -------------------------*/
+/*-------------------------- Internal Datatypes -----------------*/
+enum POLARITY                 { NEGATIVE, POSITIVE };
+
+typedef struct 
+{
+  int sampleI;
+  long sumP;
+  long sumE;
+} EMONTX_DATA;
+EMONTX_DATA g_data[CT_COUNT];
+
+/*-------------------------- Energy Calculation -----------------*/
 // Some of these variables are used in multiple blocks so cannot be static.
 // For integer maths, many variables need to be 'long'
-boolean beyondStartUpPhase    = false;  // start-up delay, allows things to settle
-
-const byte startUpPeriod      = 3;      // in seconds, to allow LP filter to settle
-const int DCoffset_I          = 512;    // nominal mid-point value of ADC @ x1 scale
-
-// Power calibration factor
-float powerCal;
+const byte startUpPeriodMs    = 3000;   // to allow LP filter to settle
+boolean beyondStartUpPeriod   = false;  // start-up delay, allows things to settle
 
 // Low pass filter
+const int DCoffset_I          = 512;    // nominal mid-point value of ADC @ x1 scale
 long DCoffset_V;
 long DCoffset_V_min;
 long DCoffset_V_max;
 
+// Power calibration factor (see calibration.h)
+float powerCal;
+float normalisationFactor;
+
 // Voltage sample
 int sampleV;
 
-// PV diverter
-long capacityOfEnergyBucket;            // depends on powerCal, frequency & the 'sweetzone' size.
+// Diverter thresholds and counter
+long capacityOfEnergyBucket;            // depends on powerCal, frequency & the 'sweetzone' size
 long lowerEnergyThreshold;              // for turning diverter off
 long upperEnergyThreshold;              // for turning diverter on
 long energyInBucket           = 0;      // to record the present level in the energy accumulator for PV diversion
 
+/*-------------------------- Data logger ------------------------*/
 // For interaction between the main processor and the ISR
 volatile boolean dataReady    = false;
 
 // Data logger
+const int maxDatalogCountInMainsCycles = DATALOG_PERIOD_SECS * CYCLES_PER_SEC;
 int datalogCountInMainsCycles = 0;
-const int maxDatalogCountInMainsCycles = DATALOG_PERIOD_SECS * CYCLES_PER_SECOND;
 
 // Pulse LED when publishing data
 unsigned long LED_onAt;
 
-/*--------------------------- Instantiate Global Objects -----------------*/
+/*-------------------------- Global Objects ---------------------*/
 EthernetClient _client;
+
 PubSubClient _mqttClient(_client);
 OXRS_MQTT _mqtt(_mqttClient);
 
-/*------------------------------ MQTT callback ---------------------------*/
+/*-------------------------- MQTT callbacks ---------------------*/
 void _mqttCallback(char * topic, byte * payload, int length)
 {
   _mqtt.receive(topic, payload, length);
@@ -106,7 +108,7 @@ void _mqttCallback(char * topic, byte * payload, int length)
 void _mqttConfig(JsonVariant json)
 {
   boolean updateParams = false;
-  
+
   if (json.containsKey("scaleFactor"))
   {
     scaleFactor = json["scaleFactor"].as<float>();    
@@ -122,11 +124,12 @@ void _mqttConfig(JsonVariant json)
   if (updateParams){ updateCalculationParameters(); }
 }
 
-/*--------------------------- Program ------------------------------------*/
+/*-------------------------- Program ----------------------------*/
 void setup()
 {
-  // initialise the serial interface
-  debugStart(FW_NAME, FW_VERSION, SERIAL_BAUD_RATE);
+  // Start the serial interface and display the firmware details
+  Serial.begin(SERIAL_BAUD_RATE);
+  printFirmware(FW_NAME, FW_MAKER, FW_VERSION);
 
   // setup indicator LED
   pinMode(LED_PIN, OUTPUT);
@@ -237,22 +240,22 @@ void loop()
 void initialiseEthernet(byte * mac) 
 {
   // Use static MAC address (since MAC address ROM is disabled)
-  debug(F("Using static MAC address: "));
+  Serial.print(F("Static MAC: "));
   memcpy(mac, STATIC_MAC, sizeof(STATIC_MAC));
 
   char mac_display[18];
   sprintf_P(mac_display, PSTR("%02X:%02X:%02X:%02X:%02X:%02X"), mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-  debugln(mac_display);
+  Serial.println(mac_display);
 
   // Set up Ethernet
-  debug(F("Getting IP address via DHCP: "));
+  Serial.print(F("IP address via DHCP: "));
   if (Ethernet.begin(mac, DHCP_TIMEOUT_MS, DHCP_RESPONSE_TIMEOUT_MS))
   {
-    debugln(Ethernet.localIP());
+    Serial.println(Ethernet.localIP());
   }
   else
   {
-    debugln(F("failed"));
+    Serial.println(F("failed"));
   }
 }
 
@@ -289,9 +292,6 @@ void initialiseCalibration()
 
 void initialiseADC()
 {
-  // in this sketch, the ADC is free-running with a cycle time of ~104uS.
-  debugln(F("ADC mode: FREE-RUNNING"));
-
   // set up the ADC to be free-running
   ADCSRA  = (1<<ADPS0)+(1<<ADPS1)+(1<<ADPS2);   // set the ADC's clock to system clock / 128
   ADCSRA |= (1 << ADEN);                        // enable the ADC
@@ -341,7 +341,7 @@ void calculateEnergy()
 
   if (polarityNow == POSITIVE)
   {
-    if (beyondStartUpPhase)
+    if (beyondStartUpPeriod)
     {
       if (polarityOfLastSampleV != POSITIVE)
       {
@@ -400,19 +400,18 @@ void calculateEnergy()
           energyInBucket = 0;
         }
 
-        datalogCountInMainsCycles++;
-
-        if (datalogCountInMainsCycles >= maxDatalogCountInMainsCycles)
+        // Do we need to publish our telemetry data?
+        if (++datalogCountInMainsCycles >= maxDatalogCountInMainsCycles)
         {
           publishTelemetry();
 
-          datalogCountInMainsCycles = 0;
           for (int i = 0; i < CT_COUNT; i++) { g_data[i].sumE = 0; }
+          datalogCountInMainsCycles = 0;
         }
 
         // clear the per-cycle accumulators for use in this new mains cycle.
-        samplesDuringThisCycle = 0;
         for (int i = 0; i < CT_COUNT; i++) { g_data[i].sumP = 0; }
+        samplesDuringThisCycle = 0;
       } // end of processing that is specific to the first Vsample in each +ve half cycle
 
       // still processing samples where the voltage is POSITIVE ...
@@ -448,13 +447,13 @@ void calculateEnergy()
     else
     {
       // wait until the DC-blocking filters have had time to settle
-      if (millis() > startUpPeriod * 1000)
+      if (millis() > startUpPeriodMs)
       {
-        samplesDuringThisCycle = 0;
         for (int i = 0; i < CT_COUNT; i++) { g_data[i].sumP = 0; }
-
-        beyondStartUpPhase = true;
-        debugln(F("READY!"));
+        samplesDuringThisCycle = 0;
+        
+        beyondStartUpPeriod = true;
+        Serial.println(F("Running!"));
       }
     }
   } // end of processing that is specific to samples where the voltage is positive
@@ -487,7 +486,7 @@ void calculateEnergy()
 
   // Processing for EVERY pair of samples. Most of this code is not used during the
   // start-up period, but it does no harm to leave it in place.  Accumulated values
-  // are cleared when beyondStartUpPhase is set to true.
+  // are cleared when beyondStartUpPeriod is set to true.
   //
   // calculate the "real power" in this sample pair and add to the accumulated sum
   for (int i = 0; i < CT_COUNT; i++)
@@ -528,14 +527,11 @@ void calculateEnergy()
 
 void updateCalculationParameters()
 {  
-  for (int i = 0; i < CT_COUNT; i++)
-  {
-    // calculate the normalisationFactor to actually apply to our readings
-    g_data[i].normalisationFactor = (powerCal * scaleFactor) / maxDatalogCountInMainsCycles;
-  }
+  // calculate the normalisationFactor to actually apply to our readings
+  normalisationFactor = (powerCal * scaleFactor) / maxDatalogCountInMainsCycles;
     
   // calculate the energy bucket size for the flow of energy at the 'grid' connection point
-  capacityOfEnergyBucket = (long)SWEETZONE_IN_JOULES * CYCLES_PER_SECOND * (1/(powerCal * scaleFactor));
+  capacityOfEnergyBucket = (long)SWEETZONE_IN_JOULES * CYCLES_PER_SEC * (1/(powerCal * scaleFactor));
 
   // calculate the energy bucket thresholds for use by the diverter
   if (diverterEnabled)
@@ -561,10 +557,10 @@ void publishTelemetry()
   for (int i = 0; i < CT_COUNT; i++)
   {
     sprintf_P(key, PSTR("ct%d"), i + 1);
-    long value = g_data[i].sumE * g_data[i].normalisationFactor; 
+    long value = g_data[i].sumE * normalisationFactor; 
     json[key] = value;
   }
-  
+
   if (_mqtt.publishTelemetry(json.as<JsonVariant>()))
   {
     digitalWrite(LED_PIN, HIGH);
