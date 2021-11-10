@@ -22,7 +22,6 @@
 #include <Ethernet.h>
 #include <ArduinoJson.h>
 #include <PubSubClient.h>
-#include <OXRS_Debug.h>
 #include <OXRS_MQTT.h>
 
 /*-------------------------- Constants --------------------------*/
@@ -36,9 +35,6 @@ const byte  VOLTAGE_SENSOR            = 0;
 const byte  LED_PIN                   = 9;
 
 /*-------------------------- Global Variables -------------------*/
-// Disable debugging due to memory constraints (required by OXRS_Debug library)
-boolean g_debug_enabled       = false;
-
 // Calibration factor
 float scaleFactor             = DEFAULT_SCALE_FACTOR;
 
@@ -129,7 +125,12 @@ void setup()
 {
   // Start the serial interface and display the firmware details
   Serial.begin(SERIAL_BAUD_RATE);
-  printFirmware(FW_NAME, FW_MAKER, FW_VERSION);
+  Serial.println();
+  Serial.println(F("========================================"));
+  Serial.print  (F("FIRMWARE: ")); Serial.println(FW_NAME);
+  Serial.print  (F("MAKER:    ")); Serial.println(FW_MAKER);
+  Serial.print  (F("VERSION:  ")); Serial.println(FW_VERSION);
+  Serial.println(F("========================================"));
 
   // setup indicator LED
   pinMode(LED_PIN, OUTPUT);
