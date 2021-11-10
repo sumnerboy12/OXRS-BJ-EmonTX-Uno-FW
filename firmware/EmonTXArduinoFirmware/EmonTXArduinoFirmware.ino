@@ -241,22 +241,23 @@ void loop()
 void initialiseEthernet(byte * mac) 
 {
   // Use static MAC address (since MAC address ROM is disabled)
-  Serial.print(F("Static MAC: "));
   memcpy(mac, STATIC_MAC, sizeof(STATIC_MAC));
 
   char mac_display[18];
   sprintf_P(mac_display, PSTR("%02X:%02X:%02X:%02X:%02X:%02X"), mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+
+  Serial.print(F("[emon] mac address: "));
   Serial.println(mac_display);
 
   // Set up Ethernet
-  Serial.print(F("IP address via DHCP: "));
+  Serial.print(F("[emon] ip address:  "));
   if (Ethernet.begin(mac, DHCP_TIMEOUT_MS, DHCP_RESPONSE_TIMEOUT_MS))
   {
     Serial.println(Ethernet.localIP());
   }
   else
   {
-    Serial.println(F("failed"));
+    Serial.println(F("none"));
   }
 }
 
@@ -454,7 +455,7 @@ void calculateEnergy()
         samplesDuringThisCycle = 0;
         
         beyondStartUpPeriod = true;
-        Serial.println(F("Running!"));
+        Serial.println(F("[emon] running!"));
       }
     }
   } // end of processing that is specific to samples where the voltage is positive
