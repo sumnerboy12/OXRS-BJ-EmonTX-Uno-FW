@@ -101,6 +101,18 @@ void _mqttCallback(char * topic, byte * payload, int length)
   _mqtt.receive(topic, payload, length);
 }
 
+void _mqttConnected()
+{
+  Serial.println(F("[emon] mqtt connected"));
+}
+
+void _mqttDisconnected(int state)
+{
+  Serial.print(F("[emon] mqtt disconnected (state "));
+  Serial.print(state);
+  Serial.println(F(")"));
+}
+
 void _mqttConfig(JsonVariant json)
 {
   boolean updateParams = false;
@@ -273,6 +285,8 @@ void initialiseMqtt(byte * mac)
   _mqtt.setClientId(clientId);
   
   // Register our callbacks
+  _mqtt.onConnected(_mqttConnected);
+  _mqtt.onDisconnected(_mqttDisconnected);
   _mqtt.onConfig(_mqttConfig);
   
   // Start listening for MQTT messages
