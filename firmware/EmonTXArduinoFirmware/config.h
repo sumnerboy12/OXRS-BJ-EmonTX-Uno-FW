@@ -25,7 +25,6 @@ const char *  MQTT_PASSWORD           = "qQvZnnhJt9bM5g4FUmHr";
 
 /* Diverter */
 #define       DEFAULT_DIVERTER_ENABLED  false
-#define       DIVERTER_HYSTERISIS       0.1
 #define       SWEETZONE_IN_JOULES       3600
 
 #endif

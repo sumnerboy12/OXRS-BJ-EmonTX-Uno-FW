@@ -46,9 +46,11 @@ See initialiseCalibration() in main sketch;
 #define       VOLTAGE_CALIBRATION       235.1
 #define       CURRENT_CALIBRATION       60.606
 
-// NB. Any tool which determines the optimal value of phaseCal must have a similar
-// scheme for taking sample values as does this sketch!
-// http://openenergymonitor.org/emon/node/3792#comment-18683
-const float PHASE_CAL_OFFSET[CT_COUNT]  = { 0.2, 0.4, 0.6, 0.8 };
+// these two constants determine the profile of the LPF
+// they are matched to the physical behaviour of the YHDC SCT-013-000 CT 
+// and the CT1 samples being 375 us apart
+// set LPF_GAIN to zero to disable this extra processing 
+#define       LPF_GAIN                  8
+#define       LPF_ALPHA                 0.002
 
 #endif

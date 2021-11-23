@@ -48,6 +48,7 @@ enum POLARITY                 { NEGATIVE, POSITIVE };
 typedef struct 
 {
   int sampleI;
+  long lpf;
   long sumP;
   long sumE;
 } EMONTX_DATA;
@@ -67,16 +68,18 @@ long DCoffset_V_max;
 
 // Power calibration factor (see calibration.h)
 float powerCal;
-float normalisationFactor;
 
 // Voltage sample
 int sampleV;
 
 // Diverter thresholds and counter
 long capacityOfEnergyBucket;            // depends on powerCal, frequency & the 'sweetzone' size
-long lowerEnergyThreshold;              // for turning diverter off
-long upperEnergyThreshold;              // for turning diverter on
-long energyInBucket           = 0;      // to record the present level in the energy accumulator for PV diversion
+long energyThreshold;                   // for turning diverter on/off
+
+// Enhanced polarity (zero-crossing) detection
+#define CONSECUTIVE_SAMPLES_FOR_CONFIRMED_POLARITY 1
+enum POLARITY confirmedPolarity;
+enum POLARITY confirmedPolarityPrevious;
 
 /*-------------------------- Data logger ------------------------*/
 // For interaction between the main processor and the ISR
@@ -85,6 +88,7 @@ volatile boolean dataReady    = false;
 // Data logger
 const int maxDatalogCountInMainsCycles = DATALOG_PERIOD_SECS * CYCLES_PER_SEC;
 int datalogCountInMainsCycles = 0;
+float datalogNormalisationFactor;
 
 // Pulse LED when publishing data
 unsigned long LED_onAt;
@@ -288,6 +292,10 @@ void initialiseMqtt(byte * mac)
   _mqtt.onConnected(_mqttConnected);
   _mqtt.onDisconnected(_mqttDisconnected);
   _mqtt.onConfig(_mqttConfig);
+
+  // Shrink the internal MQTT buffer size since our heap is close to capacity
+  // and we only expect to receive short config payloads
+  _mqttClient.setBufferSize(128);
   
   // Start listening for MQTT messages
   _mqttClient.setCallback(_mqttCallback);
@@ -334,36 +342,31 @@ void initialiseADC()
 // by the ADC, the main processor can start to work on it immediately.
 void calculateEnergy()
 {
-  static boolean diverterNeedsToBeArmed = false;  // once per mains cycle (+ve half)
-  static int samplesDuringThisCycle;              // for normalising the power in each mains cycle
-  static enum POLARITY polarityOfLastSampleV;     // for zero-crossing detection
-  static long cumVdeltasThisCycle;                // for the LPF which determines DC offset (voltage)
-  static long lastSampleVminusDC;                 // for the phaseCal algorithm
+  // for normalising the power in each mains cycle
+  static int samplesDuringThisCycle;
+  // for arming the diverter load
+  static int samplesDuringNegativeHalfOfCycle;
+
+  // for diverter
+  static long energyInBucket;
+  static long energyInBucket_prediction;
+
+  // for the LPF which determines DC offset (voltage)
+  static long cumVdeltasThisCycle;
 
   // remove DC offset from the raw voltage sample by subtracting the accurate value
   // as determined by a LP filter.
   long sampleVminusDC = ((long)sampleV<<8) - DCoffset_V;
 
   // determine polarity, to aid the logical flow
-  enum POLARITY polarityNow;
-  if (sampleVminusDC > 0)
-  {
-    polarityNow = POSITIVE;
-  }
-  else
-  {
-    polarityNow = NEGATIVE;
-  }
+  checkPolarity(sampleVminusDC > 0 ? POSITIVE : NEGATIVE);
 
-  if (polarityNow == POSITIVE)
+  if (confirmedPolarity == POSITIVE)
   {
-    if (beyondStartUpPeriod)
+    if (confirmedPolarityPrevious != POSITIVE)
     {
-      if (polarityOfLastSampleV != POSITIVE)
+      if (beyondStartUpPeriod)
       {
-        // the diverter is armed once during each +ve half-cycle
-        diverterNeedsToBeArmed = true;
-
         // Calculate the real power and energy during the last whole mains cycle.
         //
         // sumP contains the sum of many individual calculations of instantaneous power.  In
@@ -425,63 +428,45 @@ void calculateEnergy()
           datalogCountInMainsCycles = 0;
         }
 
-        // clear the per-cycle accumulators for use in this new mains cycle.
+        // clear the per-cycle accumulators for use in this new mains cycle
         for (int i = 0; i < CT_COUNT; i++) { g_data[i].sumP = 0; }
+        
         samplesDuringThisCycle = 0;
-      } // end of processing that is specific to the first Vsample in each +ve half cycle
-
-      // still processing samples where the voltage is POSITIVE ...
-      if (diverterNeedsToBeArmed == true)
+        samplesDuringNegativeHalfOfCycle = 0;
+      }
+      else
       {
-        // check to see whether the diverter can now be reliably armed
-        // much easier than checking the voltage level
-        if (samplesDuringThisCycle == 3)
+        // wait until the DC-blocking filters have had time to settle
+        if (millis() > startUpPeriodMs)
         {
-          if (diverterEnabled)
-          {
-            // only update the diverter if we are outside the hysteresis range
-            if (energyInBucket < lowerEnergyThreshold)
-            {
-              updateDiverterState(false);
-            } 
-            else if (energyInBucket > upperEnergyThreshold)
-            {
-              updateDiverterState(true);
-            }
-          }
-          else
-          {
-            // if the diverter is not enabled then ensure it is OFF
-            updateDiverterState(false);
-          }          
+          for (int i = 0; i < CT_COUNT; i++) { g_data[i].sumP = 0; }
+          
+          samplesDuringThisCycle = 0;
+          samplesDuringNegativeHalfOfCycle = 0;
 
-          // clear the flag
-          diverterNeedsToBeArmed = false;
+          energyInBucket = 0;
+          energyInBucket_prediction = 0;
+          
+          beyondStartUpPeriod = true;
+          Serial.println(F("[emon] running!"));
         }
       }
-    }
-    else
-    {
-      // wait until the DC-blocking filters have had time to settle
-      if (millis() > startUpPeriodMs)
-      {
-        for (int i = 0; i < CT_COUNT; i++) { g_data[i].sumP = 0; }
-        samplesDuringThisCycle = 0;
-        
-        beyondStartUpPeriod = true;
-        Serial.println(F("[emon] running!"));
-      }
-    }
+    } // end of processing that is specific to the first Vsample in each +ve half cycle 
+
+    // still processing samples where the voltage is POSITIVE ...    
+    // (in this go-faster code, the action from here has moved to the negative half of the cycle)
+    
   } // end of processing that is specific to samples where the voltage is positive
 
   else // the polarity of this sample is negative
   {
-    if (polarityOfLastSampleV != NEGATIVE)
+    if (confirmedPolarityPrevious != NEGATIVE)
     {
       // This is the start of a new -ve half cycle (just after the zero-crossing point)
       //
       // This is a convenient point to update the Low Pass Filter for DC-offset removal,
       // which needs to be done right from the start (faster than * 0.01)
+      //
       long previousOffset = DCoffset_V;
       DCoffset_V = previousOffset + (cumVdeltasThisCycle>>6);
       cumVdeltasThisCycle = 0;
@@ -489,6 +474,7 @@ void calculateEnergy()
       // To ensure that the LPF will always start up correctly when 240V AC is available, its
       // output value needs to be prevented from drifting beyond the likely range of the
       // voltage signal.  This avoids the need to use a HPF as was done for initial Mk2 builds.
+      //
       if (DCoffset_V < DCoffset_V_min)
       {
         DCoffset_V = DCoffset_V_min;
@@ -497,8 +483,42 @@ void calculateEnergy()
       {
         DCoffset_V = DCoffset_V_max;
       }
+
+      // The average power that has been measured during the first half of this mains cycle can now be used
+      // to predict the energy state at the end of this mains cycle.  That prediction will be used to alter 
+      // the state of the load as necessary. The arming signal for the triac can't be set yet - that must 
+      // wait until the voltage has advanced further beyond the -ve going zero-crossing point.
+      //
+      long gridAveragePower = g_data[CT_GRID].sumP / samplesDuringThisCycle;
+
+      // To avoid repetitive and unnecessary calculations, the increase in energy during each mains cycle is
+      // deemed to be numerically equal to the average power.  The predicted value for the energy state at the 
+      // end of this mains cycle will therefore be the known energy state at its start plus the average power 
+      // as measured. Although the average power has been determined over only half a mains cycle, the correct
+      // number of contributing sample sets has been used so the result can be expected to be a true measurement 
+      // of average power, not half of it.  
+      //
+      energyInBucket_prediction = energyInBucket + gridAveragePower;
+      
     } // end of processing that is specific to the first Vsample in each -ve half cycle
-  } // end of processing that is specific to samples where the voltage is positive
+
+    // check to see whether the diverter can now be reliably armed
+    if (beyondStartUpPeriod && samplesDuringNegativeHalfOfCycle == 3)
+    {
+      if (diverterEnabled)
+      {
+        // turn the diverter on/off depending on how full the energy bucket is
+        updateDiverterState(energyInBucket_prediction >= energyThreshold);
+      }
+      else
+      {
+        // ensure the diverter is off if it has been disabled
+        updateDiverterState(false);
+      }
+    }
+
+    samplesDuringNegativeHalfOfCycle++;
+  } // end of processing that is specific to samples where the voltage is negative
 
   // Processing for EVERY pair of samples. Most of this code is not used during the
   // start-up period, but it does no harm to leave it in place.  Accumulated values
@@ -506,75 +526,78 @@ void calculateEnergy()
   //
   // calculate the "real power" in this sample pair and add to the accumulated sum
   for (int i = 0; i < CT_COUNT; i++)
-  { 
-    // phaseCal is used to alter the phase of the voltage waveform relative to the
-    // current waveform.  The algorithm interpolates between the most recent pair
-    // of voltage samples according to the value of phaseCal.
-    //
-    //    With phaseCal = 1, the most recent sample is used.
-    //    With phaseCal = 0, the previous sample is used
-    //    With phaseCal = 0.5, the mid-point (average) value in used
-    //    
-    // when using integer maths, floating point values need to be rescaled
-    int phaseCal = PHASE_CAL_OFFSET[i] * 256;
-
-    // phase-shift the voltage waveform so that it aligns with the current
-    long phaseShiftedSampleVminusDC = lastSampleVminusDC + (((sampleVminusDC - lastSampleVminusDC) * phaseCal)>>8);
-    long filtV = phaseShiftedSampleVminusDC>>2;   // reduce to 16-bits (now x64, or 2^6)
-
+  {
     // remove most of the DC offset from the current sample (the precise value does not matter)
     long sampleIminusDC = ((long)(g_data[i].sampleI - DCoffset_I))<<8;
-    long filtI = sampleIminusDC>>2;               // reduce to 16-bits (now x64, or 2^6)
-  
-    long instP = filtV * filtI;                   // 32-bits (now x4096, or 2^12)
-    instP = instP>>12;                            // scaling is now x1, as for Mk2 (V_ADC x I_ADC)
 
-    g_data[i].sumP += instP;
+    // extra filtering to offset the HPF effect of the CT
+    g_data[i].lpf = (g_data[i].lpf + LPF_ALPHA * (sampleIminusDC - g_data[i].lpf));
+    sampleIminusDC += (LPF_GAIN * g_data[i].lpf);
+    
+    // calculate the "real power" in this sample pair and add to the accumulated sum
+    long filtV = sampleVminusDC>>2;   // reduce to 16-bits (now x64, or 2^6)
+    long filtI = sampleIminusDC>>2;   // reduce to 16-bits (now x64, or 2^6)
+
+    long instP = filtV * filtI;       // 32-bits (now x4096, or 2^12)
+    instP = instP>>12;                // scaling is now x1, as for Mk2 (V_ADC x I_ADC)       
+    g_data[i].sumP += instP;          // cumulative power, scaling as for Mk2 (V_ADC x I_ADC)
   }
 
+  // increment sample count
   samplesDuringThisCycle++;
 
-  // store items for use during next loop
-  cumVdeltasThisCycle += sampleVminusDC;                      // for use with LP filter
-  lastSampleVminusDC = sampleVminusDC;                        // required for phaseCal algorithm
+  // for use with LP filter
+  cumVdeltasThisCycle += sampleVminusDC;
 
-  polarityOfLastSampleV = polarityNow;                        // for identification of half cycle boundaries
+  // for identification of half cycle boundaries
+  confirmedPolarityPrevious = confirmedPolarity;
 } // end of calculateEnergy()
 
 void updateCalculationParameters()
 {  
-  // calculate the normalisationFactor to actually apply to our readings
-  normalisationFactor = (powerCal * scaleFactor) / maxDatalogCountInMainsCycles;
+  // calculate the datalogNormalisationFactor to apply to our readings before publishing
+  datalogNormalisationFactor = (powerCal * scaleFactor) / maxDatalogCountInMainsCycles;
     
   // calculate the energy bucket size for the flow of energy at the 'grid' connection point
   capacityOfEnergyBucket = (long)SWEETZONE_IN_JOULES * CYCLES_PER_SEC * (1/(powerCal * scaleFactor));
 
   // calculate the energy bucket thresholds for use by the diverter
-  if (diverterEnabled)
+  energyThreshold = capacityOfEnergyBucket * 0.5;
+}
+
+// This routine prevents a zero-crossing point from being declared until 
+// a certain number of consecutive samples in the 'other' half of the 
+// waveform have been encountered.  
+void checkPolarity(POLARITY polarity)
+{
+  static byte sampleCount = 0;
+  
+  if (polarity != confirmedPolarityPrevious)
   {
-    // settings for anti-flicker mode
-    lowerEnergyThreshold = capacityOfEnergyBucket * (0.5 - DIVERTER_HYSTERISIS);
-    upperEnergyThreshold = capacityOfEnergyBucket * (0.5 + DIVERTER_HYSTERISIS);
-  }
+    sampleCount++;
+  } 
   else
   {
-    // settings for disabled
-    lowerEnergyThreshold = 0;
-    upperEnergyThreshold = 0;
+    sampleCount = 0;
+  }
+    
+  if (sampleCount > CONSECUTIVE_SAMPLES_FOR_CONFIRMED_POLARITY)
+  {
+    sampleCount = 0;
+    confirmedPolarity = polarity;
   }
 }
 
 void publishTelemetry()
 {
   // publish our readings to MQTT
-  StaticJsonDocument<64> json;
-
+  StaticJsonDocument<128> json;
+  
   char key[6];
   for (int i = 0; i < CT_COUNT; i++)
   {
     sprintf_P(key, PSTR("ct%d"), i + 1);
-    long value = g_data[i].sumE * normalisationFactor; 
-    json[key] = value;
+    json[key] = g_data[i].sumE * datalogNormalisationFactor;
   }
 
   if (_mqtt.publishTelemetry(json.as<JsonVariant>()))
