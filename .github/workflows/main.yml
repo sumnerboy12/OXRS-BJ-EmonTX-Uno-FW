@@ -36,8 +36,9 @@ jobs:
         pip install --upgrade platformio
     
     - name: Build release binary
-      run: pio run -e uno
+      run: pio run -e uno -v
       env:
+        MQTT_TEST: 'testingtesting123'
         MQTT_USERNAME: ${{ secrets.MQTT_USERNAME }}
         MQTT_PASSWORD: ${{ secrets.MQTT_PASSWORD }}
 

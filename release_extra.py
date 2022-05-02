@@ -16,6 +16,7 @@ firmware_version = ret.stdout.strip()
 
 print("Firmware Name: %s" % firmware_name)
 print("Firmware Version: %s" % firmware_version)
+print("MQTT Test: %s" % env["MQTT_TEST"])
 print("MQTT Username: %s" % env["MQTT_USERNAME"])
 
 env.Append(
