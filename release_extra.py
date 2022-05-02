@@ -14,19 +14,19 @@ env_name = env.subst("$PIOENV")
 ret = subprocess.run(["git", "describe", "--tags"], stdout=subprocess.PIPE, text=True)
 firmware_version = ret.stdout.strip()
 
-print(env)
-print(env.Dump())
+env_vars = env.get("ENV")
+print(env_vars)
 
 print("Firmware Name: %s" % firmware_name)
 print("Firmware Version: %s" % firmware_version)
-print("MQTT Test: %s" % env["MQTT_TEST"])
-print("MQTT Username: %s" % env["MQTT_USERNAME"])
+print("MQTT Test: %s" % env_vars["MQTT_TEST"])
+print("MQTT Username: %s" % env_vars["MQTT_USERNAME"])
 
 env.Append(
     BUILD_FLAGS=[
         "-DFW_VERSION=%s" % (firmware_version),
-        "-DMQTT_USERNAME=%s" % (env["MQTT_USERNAME"]),
-        "-DMQTT_PASSWORD=%s" % (env["MQTT_PASSWORD"])
+        "-DMQTT_USERNAME=%s" % (env_vars["MQTT_USERNAME"]),
+        "-DMQTT_PASSWORD=%s" % (env_vars["MQTT_PASSWORD"])
     ]
 )
 
