@@ -271,7 +271,11 @@ ISR(ADC_vect)
 void initialiseEthernet(byte * mac) 
 {
   // Use static MAC address (since MAC address ROM is disabled)
-  memcpy(mac, STATIC_MAC, sizeof(STATIC_MAC));
+  memcpy(mac, BASE_MAC_ADDRESS, sizeof(BASE_MAC_ADDRESS));
+
+  #ifdef MAC_ADDRESS_OCTET
+  mac[5] += MAC_ADDRESS_OCTET;
+  #endif
 
   char mac_display[18];
   sprintf_P(mac_display, PSTR("%02X:%02X:%02X:%02X:%02X:%02X"), mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
