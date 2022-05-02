@@ -16,8 +16,8 @@ firmware_version = ret.stdout.strip()
 
 print("Firmware Name: %s" % firmware_name)
 print("Firmware Version: %s" % firmware_version)
-print("MQTT TEST: %s" % env["ENV"]["MQTT_TEST"])
 
+# add the MQTT credentials, which should come from Github Action secrets
 env.Append(
     BUILD_FLAGS=[
         "-DFW_VERSION=%s" % (firmware_version),
