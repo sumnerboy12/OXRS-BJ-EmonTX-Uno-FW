@@ -14,6 +14,9 @@ env_name = env.subst("$PIOENV")
 ret = subprocess.run(["git", "describe", "--tags"], stdout=subprocess.PIPE, text=True)
 firmware_version = ret.stdout.strip()
 
+print(env)
+print(env.Dump())
+
 print("Firmware Name: %s" % firmware_name)
 print("Firmware Version: %s" % firmware_version)
 print("MQTT Test: %s" % env["MQTT_TEST"])
