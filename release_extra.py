@@ -16,21 +16,16 @@ firmware_version = ret.stdout.strip()
 
 print("Firmware Name: %s" % firmware_name)
 print("Firmware Version: %s" % firmware_version)
-print("MQTT Username: %s" % env.subst("$MQTT_USERNAME"))
+print("MQTT Username: %s" % env["MQTT_USERNAME"])
 
 env.Append(
-    BUILD_FLAGS=["-DFW_VERSION=%s" % (firmware_version)]
+    BUILD_FLAGS=[
+        "-DFW_VERSION=%s" % (firmware_version),
+        "-DMQTT_USERNAME=%s" % (env["MQTT_USERNAME"]),
+        "-DMQTT_PASSWORD=%s" % (env["MQTT_PASSWORD"])
+    ]
 )
 
 env.Replace(
     PROGNAME="%s_%s_v%s" % (firmware_name, env_name, firmware_version)
-)
-
-# pass thru our MQTT creds (stored as Github secrets)
-env.Append(
-    BUILD_FLAGS=["-DMQTT_USERNAME=%s" % (env.subst("$MQTT_USERNAME"))]
-)
-
-env.Append(
-    BUILD_FLAGS=["-DMQTT_PASSWORD=%s" % (env.subst("$MQTT_PASSWORD"))]
 )
