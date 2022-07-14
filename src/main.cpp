@@ -268,13 +268,14 @@ ISR(ADC_vect)
 }
 
 
-void initialiseEthernet(byte * mac) 
+void initialiseEthernet() 
 {
   // Use static MAC address (since MAC address ROM is disabled)
+  byte mac[6];
   memcpy(mac, BASE_MAC_ADDRESS, sizeof(BASE_MAC_ADDRESS));
 
-  #ifdef MAC_ADDRESS_OCTET
-  mac[5] += MAC_ADDRESS_OCTET;
+  #ifdef MAC_ADDRESS_OFFSET
+  mac[5] += MAC_ADDRESS_OFFSET;
   #endif
 
   char mac_display[18];
@@ -295,16 +296,12 @@ void initialiseEthernet(byte * mac)
   }
 }
 
-void initialiseMqtt(byte * mac)
+void initialiseMqtt()
 {
   // Set the broker connection details (hard coded)
-  _mqtt.setBroker(MQTT_BROKER, MQTT_PORT);
+  _mqtt.setBroker(STRINGIFY(MQTT_BROKER), MQTT_PORT);
   _mqtt.setAuth(STRINGIFY(MQTT_USERNAME), STRINGIFY(MQTT_PASSWORD));
-  
-  // Set the client ID to last 3 bytes of the MAC address
-  char clientId[32];
-  sprintf_P(clientId, PSTR("%02x%02x%02x"), mac[3], mac[4], mac[5]);
-  _mqtt.setClientId(clientId);
+  _mqtt.setClientId(STRINGIFY(MQTT_CLIENT_ID));
   
   // Register our callbacks
   _mqtt.onConnected(_mqttConnected);
@@ -587,11 +584,10 @@ void setup()
   pinMode(LED_PIN, OUTPUT);
 
   // initialise ethernet
-  byte mac[6];
-  initialiseEthernet(mac);
+  initialiseEthernet();
 
   // initialise MQTT
-  initialiseMqtt(mac);
+  initialiseMqtt();
 
   // setup our calibration variables
   initialiseCalibration();

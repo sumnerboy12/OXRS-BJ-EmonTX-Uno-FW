@@ -1,12 +1,8 @@
 #ifndef CONFIG_H
 #define CONFIG_H
 
-/* Ethernet MAC address - we add MAC_ADDRESS_OCTET if defined */
+/* Ethernet MAC address - we add MAC_ADDRESS_OFFSET if defined */
 const unsigned char BASE_MAC_ADDRESS[]  = { 0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0x3C };
-
-/* MQTT */
-const char *  MQTT_BROKER               = "mqtt.home";
-const int     MQTT_PORT                 = 1883;
 
 /* How many CT clamps being monitored and which one is the grid feed */
 #define       CT_COUNT                    4
