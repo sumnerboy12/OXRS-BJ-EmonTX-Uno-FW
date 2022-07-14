@@ -22,7 +22,7 @@ env.Append(
     BUILD_FLAGS=[
         "-DFW_VERSION=%s" % (firmware_version),
         "-DMQTT_BROKER=%s" % (env["ENV"]["MQTT_BROKER"]),
-        "-DMQTT_PORT=%s" % (env["ENV"]["MQTT_PORT"])
+        "-DMQTT_PORT=%s" % (env["ENV"]["MQTT_PORT"]),
         "-DMQTT_USERNAME=%s" % (env["ENV"]["MQTT_USERNAME"]),
         "-DMQTT_PASSWORD=%s" % (env["ENV"]["MQTT_PASSWORD"])
     ]
